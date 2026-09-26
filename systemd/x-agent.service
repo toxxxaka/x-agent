@@ -1,0 +1,20 @@
+[Unit]
+Description=Private X Agent loopback service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/x-agent
+EnvironmentFile=/etc/x-agent/service.env
+ExecStart=/opt/x-agent/venv/bin/python3 -m x_agent.service
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ReadWritePaths=/opt/x-agent /var/lock
+
+[Install]
+WantedBy=multi-user.target
