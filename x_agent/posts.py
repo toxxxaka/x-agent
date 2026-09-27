@@ -39,6 +39,24 @@ def _validate_text(text: str) -> str:
     return text.strip()
 
 
+def _validate_image_path(image_path: str | None) -> str | None:
+    """Return a safe local image path or reject before opening the composer."""
+    if image_path is None:
+        return None
+    if not isinstance(image_path, str) or not image_path:
+        raise ValueError("image_path must be an absolute path when supplied")
+    if not os.path.isabs(image_path):
+        raise ValueError("image_path must be an absolute path")
+    if not os.path.isfile(image_path):
+        raise ValueError("image_path must reference a regular file")
+    if os.path.getsize(image_path) <= 0:
+        raise ValueError("image_path must not be empty")
+    extension = os.path.splitext(image_path)[1].lower()
+    if extension not in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+        raise ValueError("image_path must be a JPG, PNG, WEBP, or GIF image")
+    return image_path
+
+
 def _normalise_community_name(value: str) -> str:
     """Use a presentation-independent form for exact Community matching."""
     if not isinstance(value, str) or not value.strip():
@@ -413,6 +431,75 @@ def _composer_scope(editor: Locator) -> tuple[Locator, str]:
     raise RuntimeError("Could not associate the editor with its publish controls")
 
 
+def _media_preview_count(page: Page) -> int:
+    """Count X composer attachment widgets; profile/timeline images do not match."""
+    selectors = (
+        '[data-testid="attachments"]',
+        '[data-testid="attachment"]',
+        '[data-testid="tweetPhoto"]',
+        '[data-testid="mediaPreview"]',
+    )
+    total = 0
+    for selector in selectors:
+        locator = page.locator(selector)
+        for index in range(locator.count()):
+            if locator.nth(index).is_visible():
+                total += 1
+    return total
+
+
+def _attach_image(page: Page, image_path: str, label: str) -> None:
+    """Attach one image and prove X accepted it before a post can be submitted."""
+    image_path = _validate_image_path(image_path)
+    assert image_path is not None
+    inputs = page.locator('input[type="file"][data-testid="fileInput"]')
+    if inputs.count() == 0:
+        inputs = page.locator('input[type="file"]')
+    if inputs.count() != 1:
+        raise RuntimeError("X composer media input was missing or ambiguous; post aborted")
+
+    preview_before = _media_preview_count(page)
+    upload_responses: list[int] = []
+
+    def record_upload(response: Any) -> None:
+        safe_url = response.url.split("?", 1)[0].lower()
+        if "upload" in safe_url and ("media" in safe_url or "video" in safe_url):
+            upload_responses.append(response.status)
+
+    logger.info(
+        "%s media_attach_start=true file=%s bytes=%d",
+        label,
+        os.path.basename(image_path),
+        os.path.getsize(image_path),
+    )
+    page.on("response", record_upload)
+    try:
+        inputs.first.set_input_files(image_path, timeout=30_000)
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            preview_after = _media_preview_count(page)
+            upload_ok = any(status in (200, 201, 202) for status in upload_responses)
+            if preview_after > preview_before and upload_ok:
+                logger.info(
+                    "%s media_attached=true preview_count=%d upload_status=%d",
+                    label,
+                    preview_after,
+                    upload_responses[-1],
+                )
+                return
+            page.wait_for_timeout(500)
+    finally:
+        page.remove_listener("response", record_upload)
+
+    logger.info(
+        "%s media_attached=false preview_before=%d upload_responses=%s",
+        label,
+        preview_before,
+        upload_responses,
+    )
+    raise RuntimeError("X image upload could not be verified; post aborted")
+
+
 def _publish_button(page: Page, editor: Locator, label: str) -> Locator:
     scope, method = _composer_scope(editor)
     candidates = scope.locator(PUBLISH_SELECTOR)
@@ -441,7 +528,11 @@ def _publish_button(page: Page, editor: Locator, label: str) -> Locator:
     raise RuntimeError("X disabled the publish button")
 
 
-def _submit(page: Page, editor: Locator, text: str, label: str) -> dict[str, Any]:
+def _submit(
+    page: Page, editor: Locator, text: str, label: str, image_path: str | None = None
+) -> dict[str, Any]:
+    if image_path is not None:
+        _attach_image(page, image_path, label)
     editor.fill(text)
     logger.info("%s editor_found=true chars=%d", label, len(text))
     button = _publish_button(page, editor, label)
@@ -473,6 +564,7 @@ def _create_post_on_page(
     text: str,
     label: str = "CREATE root",
     community: str | None = None,
+    image_path: str | None = None,
 ) -> dict[str, Any]:
     logger.info("%s start", label)
     try:
@@ -484,7 +576,7 @@ def _create_post_on_page(
             audience = select_community(page, editor, community)
         else:
             logger.info("audience everyone_selected=true")
-        result = _submit(page, editor, _validate_text(text), label)
+        result = _submit(page, editor, _validate_text(text), label, image_path)
         result["audience"] = audience
         return result
     except Exception:
@@ -595,9 +687,14 @@ def _create_reply_on_page(
         raise
 
 
-def create_post(text: str, community: str | None = None) -> dict[str, Any]:
+def create_post(
+    text: str, community: str | None = None, image_path: str | None = None
+) -> dict[str, Any]:
+    image_path = _validate_image_path(image_path)
     with x_page() as page:
-        return _create_post_on_page(page, text, community=community)
+        return _create_post_on_page(
+            page, text, community=community, image_path=image_path
+        )
 
 
 def reply_to_post(post_url: str, text: str) -> dict[str, Any]:
@@ -609,10 +706,12 @@ def reply_to_post(post_url: str, text: str) -> dict[str, Any]:
 def create_thread(
     posts: Iterable[str],
     community: str | None = None,
+    image_path: str | None = None,
 ) -> dict[str, Any]:
     items = [_validate_text(item) for item in posts]
     if not items:
         raise ValueError("Thread is empty")
+    image_path = _validate_image_path(image_path)
     logger.info(
         "THREAD start posts=%d community_requested=%s",
         len(items),
@@ -622,7 +721,9 @@ def create_thread(
     try:
         with x_page() as page:
             logger.info("THREAD x_page_entered=true")
-            root = _create_post_on_page(page, items[0], community=community)
+            root = _create_post_on_page(
+                page, items[0], community=community, image_path=image_path
+            )
             published.append(root)
             parent_url = root["url"]
             logger.info("THREAD root_complete=true parent_url=%s", parent_url)

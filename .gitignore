@@ -1,32 +1,67 @@
+# Python
 __pycache__/
 *.py[cod]
-*.pyo
-
-venv/
 .venv/
+venv/
+build/
+dist/
+*.egg-info/
 
+# Secrets / local config
 .env
 .env.*
-!.env.example
+*.env
+*.env.*
 !*.env.example
-
+*.key
+*.pem
+*.p12
+*.pfx
 x_cookies.json
 *cookies*.json
 *storage_state*.json
 *auth_state*.json
+.auth/
+chrome-profile/
 
+# Tests / tooling
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
-
 playwright-report/
 test-results/
+
+# Runtime / diagnostics
 screenshots/
 *.log
+*.pid
 
-chrome-profile/
+# Backups / temporary
+backups/
+*.bak
+*.backup
+*.old
+*.orig
+*.rej
+*~
+*.swp
+*.swo
+
+# Old local experiments
+/test_posts*.py
+/post.py
+/thread_override.py
+/diagnose_*.py
+/dry_run_*.py
+/load_parent.patch
+/x_agent/*_v*.py
+/x_agent/native_thread*.py
+
+# IDE / OS
 .DS_Store
 .idea/
 .vscode/

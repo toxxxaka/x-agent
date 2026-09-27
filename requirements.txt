@@ -1,0 +1,5 @@
+# Runtime dependencies verified in the deployment environment.
+playwright==1.63.0
+mcp==1.26.0
+uvicorn==0.53.0
+starlette==1.7.0

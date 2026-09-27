@@ -48,15 +48,19 @@ def x_status() -> dict:
 
 
 @mcp.tool()
-def create_x_post(text: str, community: str | None = None) -> dict:
-    """Publish final approved text. community=None publishes to Everyone; community='<name>' requires that exact X Community to be selected and verified, otherwise aborts."""
-    return create_post(text, community=community)
+def create_x_post(
+    text: str, community: str | None = None, image_path: str | None = None
+) -> dict:
+    """Publish final approved text. community=None publishes to Everyone; community='<name>' requires exact Community selection. image_path is an optional absolute local image path; X upload and preview must be verified or the post aborts."""
+    return create_post(text, community=community, image_path=image_path)
 
 
 @mcp.tool()
-def create_x_thread(posts: list[str], community: str | None = None) -> dict:
-    """Publish a sequential reply thread. community=None publishes root to Everyone; community='<name>' publishes root to that verified Community and replies continue its context. Requires explicit confirmation."""
-    return create_thread(posts, community=community)
+def create_x_thread(
+    posts: list[str], community: str | None = None, image_path: str | None = None
+) -> dict:
+    """Publish a sequential reply thread. community=None publishes root to Everyone; community='<name>' publishes root to that verified Community. image_path attaches only to the root and must be verified before publication."""
+    return create_thread(posts, community=community, image_path=image_path)
 
 
 @mcp.tool()

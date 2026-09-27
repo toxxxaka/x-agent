@@ -18,9 +18,11 @@ def main() -> None:
     post = sub.add_parser("post", help="Read final approved text from stdin and publish it")
     post.add_argument("--publish", action="store_true", required=True)
     post.add_argument("--community", help="Exact X Community name; omitted means Everyone")
+    post.add_argument("--image", help="Absolute local image path; upload is verified before publishing")
     thread = sub.add_parser("thread", help="Read a JSON string array from stdin and publish it")
     thread.add_argument("--publish", action="store_true", required=True)
     thread.add_argument("--community", help="Exact X Community name for the root; omitted means Everyone")
+    thread.add_argument("--image", help="Absolute local image path for the root; upload is verified before publishing")
     reply = sub.add_parser("reply", help="Read final approved text from stdin and publish it as a reply")
     reply.add_argument("post_url")
     reply.add_argument("--publish", action="store_true", required=True)
@@ -30,9 +32,9 @@ def main() -> None:
     elif args.command == "communities":
         result = list_communities()
     elif args.command == "post":
-        result = create_post(_stdin_text(), community=args.community)
+        result = create_post(_stdin_text(), community=args.community, image_path=args.image)
     elif args.command == "thread":
-        result = create_thread(json.loads(_stdin_text()), community=args.community)
+        result = create_thread(json.loads(_stdin_text()), community=args.community, image_path=args.image)
     else:
         result = reply_to_post(args.post_url, _stdin_text())
     print(json.dumps(result, ensure_ascii=False))
