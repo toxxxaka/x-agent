@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/toxxxaka/x-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/toxxxaka/x-agent/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white&style=flat-square)](https://www.python.org/)
-[![License](https://img.shields.io/github/license/toxxxaka/x-agent?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/github/license/toxxxaka/x-agent?style=for-the-badge)](LICENSE)
 
 Private, self-hosted X publishing automation built around the authenticated X web UI.
 
@@ -197,4 +197,4 @@ Keep reviewed source in a Git repository, for example /home/ai/x-agent-build, an
 
 ## License
 
-Choose and add a license before making the repository public.
+Licensed under the [MIT License](LICENSE).
