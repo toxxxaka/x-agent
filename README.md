@@ -1,8 +1,8 @@
-# x-agent
+# X-agent
 
 [![CI](https://github.com/toxxxaka/x-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/toxxxaka/x-agent/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white&style=flat-square)](https://www.python.org/)
-[![License](https://img.shields.io/github/license/toxxxaka/x-agent?style=for-the-badge)](LICENSE)
+[![License](https://img.shields.io/github/license/toxxxaka/x-agent?style=flat)](LICENSE)
 
 Private, self-hosted X publishing automation built around the authenticated X web UI.
 
