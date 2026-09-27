@@ -1,5 +1,9 @@
 # x-agent
 
+[![CI](https://github.com/toxxxaka/x-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/toxxxaka/x-agent/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white&style=flat-square)](https://www.python.org/)
+[![License](https://img.shields.io/github/license/toxxxaka/x-agent?style=flat-square)](LICENSE)
+
 Private, self-hosted X publishing automation built around the authenticated X web UI.
 
 x-agent lets an AI assistant or local operator publish reviewed posts, linear threads, replies, and Community posts through Playwright. It does not require X API credits and keeps the authenticated browser session on infrastructure you control.
