@@ -3,13 +3,14 @@ import json
 import sys
 from typing import Any
 
-from .posts import create_post, create_thread, reply_to_post, status
+from .posts import create_post, create_thread, list_communities, reply_to_post, status
 
 TOOLS = [
     {"name": "x_status", "description": "Check whether the private X browser session is authenticated. Does not publish anything.", "inputSchema": {"type": "object", "properties": {}}},
-    {"name": "create_x_post", "description": "Publish exactly this text as one X post. This is an external side effect: call it only after the user has explicitly confirmed publication.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "description": "Final approved post text."}}, "required": ["text"], "additionalProperties": False}},
-    {"name": "create_x_thread", "description": "Publish a linear X thread: the first item is the root and every next item replies to the previous one. This publishes externally; call it only after explicit user confirmation.", "inputSchema": {"type": "object", "properties": {"posts": {"type": "array", "items": {"type": "string"}, "minItems": 1}}, "required": ["posts"], "additionalProperties": False}},
-    {"name": "reply_x_post", "description": "Publish this text as a reply to an existing X status URL. This publishes externally; call it only after explicit user confirmation.", "inputSchema": {"type": "object", "properties": {"post_url": {"type": "string"}, "text": {"type": "string"}}, "required": ["post_url", "text"], "additionalProperties": False}},
+    {"name": "list_x_communities", "description": "List Communities available to the current X account. Read-only: does not publish or enter post text.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"name": "create_x_post", "description": "Publish exactly this text as one X post after explicit confirmation. community omitted or null means Everyone. community='<name>' requires the exact named X Community to be selected and verified; otherwise the operation aborts and never falls back to Everyone.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "description": "Final approved post text."}, "community": {"type": ["string", "null"], "description": "Optional exact Community name. null or omitted publishes to Everyone."}}, "required": ["text"], "additionalProperties": False}},
+    {"name": "create_x_thread", "description": "Publish a linear X thread after explicit confirmation. community omitted or null means Everyone. community='<name>' selects and verifies that Community for the root; every next post replies to the previous post in the same context. If selection cannot be verified, it aborts without publishing the root.", "inputSchema": {"type": "object", "properties": {"posts": {"type": "array", "items": {"type": "string"}, "minItems": 1}, "community": {"type": ["string", "null"], "description": "Optional exact Community name. null or omitted publishes root to Everyone."}}, "required": ["posts"], "additionalProperties": False}},
+    {"name": "reply_x_post", "description": "Publish this text as a reply to an existing X status URL. This publishes externally; call it only after explicit user confirmation. X inherits the source post context, including Community context when supported by X.", "inputSchema": {"type": "object", "properties": {"post_url": {"type": "string"}, "text": {"type": "string"}}, "required": ["post_url", "text"], "additionalProperties": False}},
 ]
 
 
@@ -18,7 +19,7 @@ def _result(value: Any) -> dict[str, Any]:
 
 
 def _call(name: str, args: dict[str, Any]) -> dict[str, Any]:
-    functions = {"x_status": lambda: status(), "create_x_post": lambda: create_post(args["text"]), "create_x_thread": lambda: create_thread(args["posts"]), "reply_x_post": lambda: reply_to_post(args["post_url"], args["text"])}
+    functions = {"x_status": lambda: status(), "list_x_communities": lambda: list_communities(), "create_x_post": lambda: create_post(args["text"], community=args.get("community")), "create_x_thread": lambda: create_thread(args["posts"], community=args.get("community")), "reply_x_post": lambda: reply_to_post(args["post_url"], args["text"])}
     if name not in functions:
         raise ValueError(f"unknown tool: {name}")
     return _result(functions[name]())

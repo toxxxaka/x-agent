@@ -8,7 +8,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from .posts import create_post, create_thread, reply_to_post, status
+from .posts import create_post, create_thread, list_communities, reply_to_post, status
 
 TOKEN = os.environ.get("X_AGENT_MCP_TOKEN")
 
@@ -34,7 +34,7 @@ mcp = FastMCP(
         "Private X publishing tools. Draft in chat first. Publishing tools have "
         "an external side effect and may only be called after explicit user approval."
     ),
-    host="0.0.0.0",
+    host="127.0.0.1",
     port=8765,
     streamable_http_path="/mcp",
     stateless_http=True,
@@ -48,15 +48,21 @@ def x_status() -> dict:
 
 
 @mcp.tool()
-def create_x_post(text: str) -> dict:
-    """Publish final approved text as one X post. Requires explicit user confirmation."""
-    return create_post(text)
+def create_x_post(text: str, community: str | None = None) -> dict:
+    """Publish final approved text. community=None publishes to Everyone; community='<name>' requires that exact X Community to be selected and verified, otherwise aborts."""
+    return create_post(text, community=community)
 
 
 @mcp.tool()
-def create_x_thread(posts: list[str]) -> dict:
-    """Publish final approved texts as one sequential X reply thread. Requires explicit confirmation."""
-    return create_thread(posts)
+def create_x_thread(posts: list[str], community: str | None = None) -> dict:
+    """Publish a sequential reply thread. community=None publishes root to Everyone; community='<name>' publishes root to that verified Community and replies continue its context. Requires explicit confirmation."""
+    return create_thread(posts, community=community)
+
+
+@mcp.tool()
+def list_x_communities() -> dict:
+    """List Communities available to the current X account. Read-only: does not enter text or publish."""
+    return list_communities()
 
 
 @mcp.tool()
@@ -70,7 +76,7 @@ def main() -> None:
         raise SystemExit("X_AGENT_MCP_TOKEN is required")
     app = mcp.streamable_http_app()
     app.add_middleware(BearerTokenMiddleware)
-    uvicorn.run(app, host="0.0.0.0", port=8765, log_level="info")
+    uvicorn.run(app, host="127.0.0.1", port=8765, log_level="info")
 
 
 if __name__ == "__main__":
