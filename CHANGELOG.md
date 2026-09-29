@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-09-29 - Snap Chromium media upload staging
+
+### Fixed
+
+- Fixed image uploads failing when Snap Chromium could not access source files under `/tmp` or `/home/ai`.
+- Media is now staged byte-for-byte in a private Chromium-accessible directory before attachment.
+- Added image decode preflight before publishing.
+- Publishing now waits for all media upload requests to complete before submitting the post.
+- The MCP systemd service is granted access only to the dedicated staging directory.
+- Staged media files are cleaned up after use.
+
+### Verified
+
+- 1672x941 PNG decoded successfully during preflight.
+- Media upload sequence completed with HTTP `202 -> 204 -> 201`.
+- Composer preview was detected before publishing.
+- `CreateTweet` completed with HTTP 200.
+- Published status contained `tweetPhoto` and `/photo/1`.
+
 ## 2026-09-27 - X Communities
 
 - Added optional community support to posts and thread roots.

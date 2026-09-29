@@ -2,7 +2,10 @@
 
 import os
 import re
+import shutil
+import tempfile
 import time
+from pathlib import Path
 from collections.abc import Iterable
 from typing import Any
 
@@ -192,7 +195,6 @@ def open_composer(page: Page) -> Locator:
         logger.info("OPEN_COMPOSER method=existing editor_found=true")
         return editor
 
-    page.locator("body").click(position={"x": 10, "y": 10})
     page.keyboard.press("n")
     page.wait_for_timeout(1_500)
     dismiss_cookie_consent(page)
@@ -200,19 +202,6 @@ def open_composer(page: Page) -> Locator:
     if editor:
         logger.info("OPEN_COMPOSER method=shortcut_n editor_found=true")
         return editor
-
-    links = page.locator('a[href="/compose/post"]')
-    for index in range(links.count()):
-        link = links.nth(index)
-        if not link.is_visible() or not _receives_pointer_events(link):
-            continue
-        link.click(timeout=10_000)
-        page.wait_for_timeout(1_500)
-        dismiss_cookie_consent(page)
-        editor = _wait_for_interactive_editor(page, f"REPLY {index}")
-        if editor:
-            logger.info("OPEN_COMPOSER method=compose_link editor_found=true")
-            return editor
 
     page.goto(COMPOSE_URL, wait_until="domcontentloaded", timeout=60_000)
     page.wait_for_timeout(2_000)
@@ -448,57 +437,313 @@ def _media_preview_count(page: Page) -> int:
     return total
 
 
-def _attach_image(page: Page, image_path: str, label: str) -> None:
+def _media_input(page: Page, editor: Locator, label: str) -> Locator:
+    """Find the uploader that belongs to the active composer."""
+    candidates = page.locator('input[type="file"][data-testid="fileInput"]')
+    if candidates.count() == 0:
+        candidates = page.locator('input[type="file"]')
+    scope, scope_method = _composer_scope(editor)
+    scoped = scope.locator('input[type="file"]')
+    if scoped.count() == 1:
+        logger.info("%s media_input=true method=%s", label, scope_method)
+        return scoped.first
+    matches = editor.evaluate(
+        """editor => {
+            const dialog = editor.closest('[role="dialog"]');
+            return [...document.querySelectorAll('input[type="file"]')]
+                .map((input, index) => ({index, matches: input.closest('[role="dialog"]') === dialog}))
+                .filter(item => item.matches)
+                .map(item => item.index);
+        }"""
+    )
+    if isinstance(matches, list) and len(matches) == 1:
+        logger.info("%s media_input=true method=editor_dialog", label)
+        return candidates.nth(matches[0])
+    logger.info(
+        "%s media_input=false candidates=%d scoped=%d dialog_matches=%d",
+        label,
+        candidates.count(),
+        scoped.count(),
+        len(matches) if isinstance(matches, list) else -1,
+    )
+    raise RuntimeError("X composer media input was missing or ambiguous; post aborted")
+
+
+def _safe_image_url(url: str) -> str:
+    """Keep only a bounded, query-free URL for image diagnostics."""
+    return url.split("?", 1)[0][:300]
+
+
+def _safe_image_message(value: object) -> str:
+    """Keep browser diagnostics useful without recording URLs or credentials."""
+    message = " ".join(str(value).split())
+    message = re.sub(r"https?://\S+", "[url]", message)
+    message = re.sub(
+        r"(?i)(auth_token|ct0|authorization|bearer)\S*", "[redacted]", message
+    )
+    return message[:300]
+
+
+def _image_stage_dir() -> Path:
+    """Return the Chromium-readable staging directory for the current user."""
+    configured = os.environ.get("X_AGENT_MEDIA_STAGE_DIR")
+    if configured:
+        directory = Path(configured)
+    else:
+        directory = Path.home() / "snap" / "chromium" / "common" / "x-agent-media"
+    if not directory.is_absolute():
+        raise RuntimeError("X_AGENT_MEDIA_STAGE_DIR must be an absolute path")
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return directory
+
+
+def _stage_image_for_chromium(image_path: str) -> Path:
+    """Copy bytes unchanged into the private directory Snap Chromium can read."""
+    source = Path(image_path)
+    directory = _image_stage_dir()
+    with tempfile.NamedTemporaryFile(
+        dir=directory,
+        prefix="x-agent-",
+        suffix=source.suffix.lower(),
+        delete=False,
+    ) as handle:
+        staged = Path(handle.name)
+        with source.open("rb") as original:
+            shutil.copyfileobj(original, handle)
+    staged.chmod(0o600)
+    logger.info(
+        "IMAGE staged=true source_file=%s staged_file=%s bytes=%d",
+        source.name,
+        staged.name,
+        staged.stat().st_size,
+    )
+    return staged
+
+
+def _remove_staged_image(staged: Path) -> None:
+    try:
+        staged.unlink(missing_ok=True)
+        logger.info("IMAGE staged_cleanup=true")
+    except OSError as exc:
+        logger.info("IMAGE staged_cleanup=false reason=%s", _safe_image_message(exc))
+
+
+def _image_input_state(media_input: Locator) -> dict[str, Any]:
+    """Return non-sensitive facts about the selected uploader."""
+    return media_input.evaluate(
+        """input => ({
+            accept: input.getAttribute('accept') || '',
+            multiple: input.multiple,
+            disabled: input.disabled,
+            value: input.value ? '[set]' : '',
+            files: [...input.files].map(file => ({
+                name: file.name,
+                size: file.size,
+                type: file.type,
+            })),
+            connected: input.isConnected,
+            in_dialog: !!input.closest('[role="dialog"]'),
+        })"""
+    )
+
+
+def _verify_browser_can_decode_image(page: Page, image_path: str) -> None:
+    """Prove Chromium can decode the file before asking X to upload it."""
+    frame_id = "x-agent-image-preflight"
+    page.evaluate(
+        """frame_id => {
+            document.getElementById(frame_id)?.remove();
+            const frame = document.createElement('iframe');
+            frame.id = frame_id;
+            frame.setAttribute('sandbox', 'allow-scripts');
+            frame.srcdoc = '<input id="image" type="file">';
+            frame.style.display = 'none';
+            document.body.appendChild(frame);
+        }""",
+        frame_id,
+    )
+    try:
+        field = page.frame_locator(f"#{frame_id}").locator("#image")
+        field.set_input_files(image_path, timeout=30_000)
+        result = field.evaluate(
+            """async input => {
+                const file = input.files[0];
+                if (!file) return {files: 0, decoded: false, reason: 'no_file'};
+                const url = URL.createObjectURL(file);
+                try {
+                    const image = new Image();
+                    const dimensions = await new Promise((resolve, reject) => {
+                        image.onload = () => resolve({width: image.naturalWidth, height: image.naturalHeight});
+                        image.onerror = () => reject(new Error('image_decode_failed'));
+                        image.src = url;
+                    });
+                    return {files: input.files.length, decoded: true, dimensions};
+                } catch (error) {
+                    return {files: input.files.length, decoded: false, reason: String(error.message || error)};
+                } finally {
+                    URL.revokeObjectURL(url);
+                }
+            }"""
+        )
+    finally:
+        page.evaluate("frame_id => document.getElementById(frame_id)?.remove()", frame_id)
+    logger.info(
+        "IMAGE preflight files=%d decoded=%s dimensions=%s reason=%s",
+        result.get("files", 0),
+        result.get("decoded", False),
+        result.get("dimensions", ""),
+        _safe_image_message(result.get("reason", "")),
+    )
+    if not result.get("decoded"):
+        raise RuntimeError("Image cannot be decoded by Chromium; X upload was not attempted")
+
+
+def _image_ui_errors(page: Page, editor: Locator) -> list[str]:
+    """Read visible error surfaces only while the composer is still text-free."""
+    scope, _ = _composer_scope(editor)
+    return scope.evaluate(
+        r"""scope => [...scope.querySelectorAll(
+            '[role="alert"], [data-testid*="error" i], [data-testid*="toast" i]'
+        )]
+            .filter(node => !!(node.offsetWidth || node.offsetHeight || node.getClientRects().length))
+            .map(node => (node.innerText || node.getAttribute('aria-label') || '').trim())
+            .filter(Boolean)
+            .map(value => value.replace(/https?:\/\/\S+/g, '[url]').slice(0, 300))
+            .slice(0, 5)"""
+    )
+
+
+def _attach_image(page: Page, editor: Locator, image_path: str, label: str) -> None:
     """Attach one image and prove X accepted it before a post can be submitted."""
     image_path = _validate_image_path(image_path)
     assert image_path is not None
-    inputs = page.locator('input[type="file"][data-testid="fileInput"]')
-    if inputs.count() == 0:
-        inputs = page.locator('input[type="file"]')
-    if inputs.count() != 1:
-        raise RuntimeError("X composer media input was missing or ambiguous; post aborted")
-
-    preview_before = _media_preview_count(page)
-    upload_responses: list[int] = []
-
-    def record_upload(response: Any) -> None:
-        safe_url = response.url.split("?", 1)[0].lower()
-        if "upload" in safe_url and ("media" in safe_url or "video" in safe_url):
-            upload_responses.append(response.status)
-
-    logger.info(
-        "%s media_attach_start=true file=%s bytes=%d",
-        label,
-        os.path.basename(image_path),
-        os.path.getsize(image_path),
-    )
-    page.on("response", record_upload)
+    staged = _stage_image_for_chromium(image_path)
+    listeners_installed = False
     try:
-        inputs.first.set_input_files(image_path, timeout=30_000)
+        _verify_browser_can_decode_image(page, str(staged))
+        media_input = _media_input(page, editor, label)
+        preview_before = _media_preview_count(page)
+        upload_responses: list[int] = []
+        pending_uploads = 0
+        last_upload_activity = 0.0
+
+        def is_media_request(url: str) -> bool:
+            safe_url = _safe_image_url(url).lower()
+            return any(marker in safe_url for marker in ("media", "upload", "attachment"))
+
+        def record_request(request: Any) -> None:
+            nonlocal pending_uploads, last_upload_activity
+            if is_media_request(request.url):
+                safe_url = _safe_image_url(request.url)
+                logger.info("IMAGE network_request method=%s url=%s", request.method, safe_url)
+                if "upload" in safe_url.lower():
+                    pending_uploads += 1
+                    last_upload_activity = time.monotonic()
+                    logger.info("IMAGE upload_pending=%d", pending_uploads)
+
+        def record_response(response: Any) -> None:
+            nonlocal pending_uploads, last_upload_activity
+            if is_media_request(response.url):
+                safe_url = _safe_image_url(response.url)
+                logger.info("IMAGE network_response status=%d url=%s", response.status, safe_url)
+                if "upload" in safe_url.lower():
+                    upload_responses.append(response.status)
+                    pending_uploads = max(0, pending_uploads - 1)
+                    last_upload_activity = time.monotonic()
+                    logger.info("IMAGE upload_pending=%d", pending_uploads)
+
+        def record_request_failed(request: Any) -> None:
+            nonlocal pending_uploads, last_upload_activity
+            safe_url = _safe_image_url(request.url)
+            if "upload" in safe_url.lower():
+                pending_uploads = max(0, pending_uploads - 1)
+                last_upload_activity = time.monotonic()
+                logger.info("IMAGE upload_request_failed=true pending=%d url=%s", pending_uploads, safe_url)
+
+        def record_console(message: Any) -> None:
+            if message.type == "error":
+                logger.info(
+                    "IMAGE console_error=true detail=%s",
+                    _safe_image_message(message.text),
+                )
+
+        def record_page_error(error: Any) -> None:
+            logger.info(
+                "IMAGE page_error=true detail=%s", _safe_image_message(error)
+            )
+
+        logger.info(
+            "IMAGE attach_start label=%s file=%s bytes=%d",
+            label,
+            os.path.basename(image_path),
+            os.path.getsize(image_path),
+        )
+        before = _image_input_state(media_input)
+        logger.info(
+            "IMAGE input_found=true count=1 accept=%s multiple=%s disabled=%s "
+            "files_before=%d in_dialog=%s connected=%s",
+            before["accept"],
+            before["multiple"],
+            before["disabled"],
+            len(before["files"]),
+            before["in_dialog"],
+            before["connected"],
+        )
+        page.on("request", record_request)
+        page.on("response", record_response)
+        page.on("requestfailed", record_request_failed)
+        page.on("console", record_console)
+        page.on("pageerror", record_page_error)
+        listeners_installed = True
+        media_input.set_input_files(str(staged), timeout=30_000)
+        after = _image_input_state(media_input)
+        files = after["files"]
+        logger.info(
+            "IMAGE set_input_files_done=true files_after=%d filename=%s file_size=%s "
+            "disabled=%s in_dialog=%s",
+            len(files),
+            files[0]["name"] if files else "",
+            files[0]["size"] if files else "",
+            after["disabled"],
+            after["in_dialog"],
+        )
         deadline = time.monotonic() + 45
         while time.monotonic() < deadline:
             preview_after = _media_preview_count(page)
             upload_ok = any(status in (200, 201, 202) for status in upload_responses)
-            if preview_after > preview_before and upload_ok:
+            upload_settled = (
+                pending_uploads == 0
+                and last_upload_activity > 0
+                and time.monotonic() - last_upload_activity >= 1.0
+            )
+            if preview_after > preview_before and upload_ok and upload_settled:
                 logger.info(
-                    "%s media_attached=true preview_count=%d upload_status=%d",
-                    label,
+                    "IMAGE preview_found=true preview_count=%d upload_status=%d "
+                    "upload_pending=%d upload_verified=true",
                     preview_after,
                     upload_responses[-1],
+                    pending_uploads,
                 )
                 return
             page.wait_for_timeout(500)
+
+        ui_errors = _image_ui_errors(page, editor)
+        logger.info(
+            "IMAGE preview_found=false preview_before=%d upload_responses=%s "
+            "ui_error=%s upload_verified=false",
+            preview_before,
+            upload_responses,
+            ui_errors,
+        )
+        raise RuntimeError("X image upload could not be verified; post aborted")
     finally:
-        page.remove_listener("response", record_upload)
-
-    logger.info(
-        "%s media_attached=false preview_before=%d upload_responses=%s",
-        label,
-        preview_before,
-        upload_responses,
-    )
-    raise RuntimeError("X image upload could not be verified; post aborted")
-
+        if listeners_installed:
+            page.remove_listener("request", record_request)
+            page.remove_listener("response", record_response)
+            page.remove_listener("requestfailed", record_request_failed)
+            page.remove_listener("console", record_console)
+            page.remove_listener("pageerror", record_page_error)
+        _remove_staged_image(staged)
 
 def _publish_button(page: Page, editor: Locator, label: str) -> Locator:
     scope, method = _composer_scope(editor)
@@ -532,7 +777,7 @@ def _submit(
     page: Page, editor: Locator, text: str, label: str, image_path: str | None = None
 ) -> dict[str, Any]:
     if image_path is not None:
-        _attach_image(page, image_path, label)
+        _attach_image(page, editor, image_path, label)
     editor.fill(text)
     logger.info("%s editor_found=true chars=%d", label, len(text))
     button = _publish_button(page, editor, label)
@@ -570,6 +815,8 @@ def _create_post_on_page(
     try:
         close_overlays(page)
         editor = open_composer(page)
+        if image_path is not None:
+            logger.info("IMAGE composer_path=standard_open_composer editor_found=true")
         audience = EVERYONE_AUDIENCE
         if community is not None:
             editor = _composer_with_audience(page, editor)
