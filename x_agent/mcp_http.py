@@ -16,7 +16,7 @@ TOKEN = os.environ.get("X_AGENT_MCP_TOKEN")
 class BearerTokenMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.url.path == "/healthz":
-            return JSONResponse({"ok": True})
+            return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
         expected = f"Bearer {TOKEN}"
         supplied = request.headers.get("authorization", "")
         if not TOKEN or not secrets.compare_digest(supplied, expected):
@@ -25,7 +25,10 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
                 status_code=401,
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        return await call_next(request)
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
 
 mcp = FastMCP(

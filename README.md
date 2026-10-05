@@ -167,7 +167,7 @@ Use list_x_communities() before publishing when the display name is uncertain.
 
 Pass an absolute local path through image_path (MCP) or --image (CLI). Supported formats are JPG, JPEG, PNG, WEBP, and GIF. A thread can have an image on the root post. Before X receives it, x-agent copies the file byte-for-byte into Chromium's private staging directory, because Snap Chromium may not be allowed to read arbitrary source paths. The staging copy is removed after every attempt. For the provided systemd unit, create `/root/snap/chromium/common/x-agent-media` with mode `0700` before starting the service.
 
-Before posting, the agent requires:
+The service adds `Cache-Control: no-store` and `X-Content-Type-Options: nosniff` to MCP responses. Before posting, the agent requires:
 
 1. An attachment preview rendered by X in the active composer.
 2. A successful media-upload response.

@@ -52,8 +52,12 @@ def _validate_image_path(image_path: str | None) -> str | None:
         raise ValueError("image_path must be an absolute path")
     if not os.path.isfile(image_path):
         raise ValueError("image_path must reference a regular file")
-    if os.path.getsize(image_path) <= 0:
+    size = os.path.getsize(image_path)
+    if size <= 0:
         raise ValueError("image_path must not be empty")
+    limit = int(os.environ.get("X_AGENT_MAX_IMAGE_BYTES", "5242880"))
+    if size > limit:
+        raise ValueError(f"image_path exceeds configured limit of {limit} bytes")
     extension = os.path.splitext(image_path)[1].lower()
     if extension not in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
         raise ValueError("image_path must be a JPG, PNG, WEBP, or GIF image")
