@@ -4,12 +4,28 @@ import sys
 from typing import Any
 
 from .articles import create_article, publish_article_draft
-from .posts import create_post, create_thread, list_communities, reply_to_post, status
+from .doctor import doctor
+from .posts import (
+    create_post,
+    create_thread,
+    get_my_recent_posts,
+    get_operation_status,
+    list_communities,
+    reply_to_post,
+    resolve_operation,
+    resume_thread,
+    status,
+)
 
 TOOLS = [
     {"name": "x_status", "description": "Check whether the private X browser session is authenticated. Does not publish anything.", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "x_doctor", "description": "Read-only local configuration diagnostics. Does not contact X.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"name": "get_x_operation_status", "description": "Read-only operation status. UNCERTAIN must be resolved manually and is never retried automatically.", "inputSchema": {"type": "object", "properties": {"operation_id": {"type": ["string", "null"]}, "idempotency_key": {"type": ["string", "null"]}}, "additionalProperties": False}},
+    {"name": "get_my_recent_x_posts", "description": "Read locally confirmed publication URLs. Never contacts X or publishes.", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "default": 10}}, "additionalProperties": False}},
+    {"name": "resolve_x_operation", "description": "Record a human decision for an UNCERTAIN operation; never retries or publishes.", "inputSchema": {"type": "object", "properties": {"operation_id": {"type": "string"}, "published": {"type": "boolean"}, "url": {"type": ["string", "null"]}}, "required": ["operation_id", "published"], "additionalProperties": False}},
+    {"name": "resume_x_thread", "description": "Continue only the unconfirmed tail of a manually approved RESUMABLE thread.", "inputSchema": {"type": "object", "properties": {"operation_id": {"type": "string"}, "posts": {"type": "array", "items": {"type": "string"}, "minItems": 1}, "community": {"type": ["string", "null"]}, "image_path": {"type": ["string", "null"]}}, "required": ["operation_id", "posts"], "additionalProperties": False}},
     {"name": "list_x_communities", "description": "List Communities available to the current X account. Read-only: does not publish or enter post text.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
-    {"name": "create_x_post", "description": "Publish exactly this text as one X post after explicit confirmation. community omitted or null means Everyone. image_path is an optional absolute local image path; upload and preview must be confirmed or publication aborts.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "description": "Final approved post text."}, "community": {"type": ["string", "null"], "description": "Optional exact Community name. null or omitted publishes to Everyone."}, "image_path": {"type": ["string", "null"], "description": "Optional absolute local image path."}}, "required": ["text"], "additionalProperties": False}},
+    {"name": "create_x_post", "description": "Publish exactly this text as one X post after explicit confirmation. community omitted or null means Everyone. An idempotency key prevents duplicate publication.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "description": "Final approved post text."}, "community": {"type": ["string", "null"], "description": "Optional exact Community name. null or omitted publishes to Everyone."}, "image_path": {"type": ["string", "null"], "description": "Optional absolute local image path."}, "idempotency_key": {"type": ["string", "null"]}}, "required": ["text"], "additionalProperties": False}},
     {"name": "create_x_thread", "description": "Publish a linear X thread after explicit confirmation. community omitted or null means Everyone. image_path attaches only to the root, and upload plus preview must be confirmed before publication.", "inputSchema": {"type": "object", "properties": {"posts": {"type": "array", "items": {"type": "string"}, "minItems": 1}, "community": {"type": ["string", "null"], "description": "Optional exact Community name. null or omitted publishes root to Everyone."}, "image_path": {"type": ["string", "null"], "description": "Optional absolute local image path for the root."}}, "required": ["posts"], "additionalProperties": False}},
     {"name": "reply_x_post", "description": "Publish this text as a reply to an existing X status URL. This publishes externally; call it only after explicit user confirmation. X inherits the source post context, including Community context when supported by X.", "inputSchema": {"type": "object", "properties": {"post_url": {"type": "string"}, "text": {"type": "string"}}, "required": ["post_url", "text"], "additionalProperties": False}},
     {"name": "create_x_article", "description": "Create content in X's dedicated Articles editor, never the post/thread composer. Markdown supports headings, subheadings, lists, quotes and paragraphs. cover_image_path is required. publish=false saves and verifies a draft; publish=true publishes only after the Everyone audience is explicitly confirmed, never Subscribers Only or a Community.", "inputSchema": {"type": "object", "properties": {"title": {"type": "string"}, "body_markdown": {"type": "string"}, "cover_image_path": {"type": "string", "description": "Absolute local JPG, PNG, or WEBP cover path."}, "publish": {"type": "boolean", "default": False}}, "required": ["title", "body_markdown", "cover_image_path"], "additionalProperties": False}},
@@ -22,7 +38,7 @@ def _result(value: Any) -> dict[str, Any]:
 
 
 def _call(name: str, args: dict[str, Any]) -> dict[str, Any]:
-    functions = {"x_status": lambda: status(), "list_x_communities": lambda: list_communities(), "create_x_post": lambda: create_post(args["text"], community=args.get("community"), image_path=args.get("image_path")), "create_x_thread": lambda: create_thread(args["posts"], community=args.get("community"), image_path=args.get("image_path")), "reply_x_post": lambda: reply_to_post(args["post_url"], args["text"]), "create_x_article": lambda: create_article(args["title"], args["body_markdown"], args["cover_image_path"], publish=args.get("publish", False)), "publish_x_article_draft": lambda: publish_article_draft(args["draft_url"], args["title"], args["body_markdown"])}
+    functions = {"x_status": lambda: status(), "x_doctor": lambda: doctor(), "get_x_operation_status": lambda: get_operation_status(args.get("operation_id"), args.get("idempotency_key")), "get_my_recent_x_posts": lambda: get_my_recent_posts(args.get("limit", 10)), "resolve_x_operation": lambda: resolve_operation(args["operation_id"], args["published"], args.get("url")), "resume_x_thread": lambda: resume_thread(args["operation_id"], args["posts"], args.get("community"), args.get("image_path")), "list_x_communities": lambda: list_communities(), "create_x_post": lambda: create_post(args["text"], community=args.get("community"), image_path=args.get("image_path"), idempotency_key=args.get("idempotency_key")), "create_x_thread": lambda: create_thread(args["posts"], community=args.get("community"), image_path=args.get("image_path"), idempotency_key=args.get("idempotency_key")), "reply_x_post": lambda: reply_to_post(args["post_url"], args["text"], idempotency_key=args.get("idempotency_key")), "create_x_article": lambda: create_article(args["title"], args["body_markdown"], args["cover_image_path"], publish=args.get("publish", False)), "publish_x_article_draft": lambda: publish_article_draft(args["draft_url"], args["title"], args["body_markdown"])}
     if name not in functions:
         raise ValueError(f"unknown tool: {name}")
     return _result(functions[name]())

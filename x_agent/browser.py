@@ -29,6 +29,9 @@ def x_page():
             )
             context: BrowserContext = browser.new_context()
             try:
+                if os.environ.get("X_AGENT_BLOCK_X_NETWORK") == "1":
+                    context.route("**://*.x.com/**", lambda route: route.abort())
+                    context.route("**://x.com/**", lambda route: route.abort())
                 context.add_cookies(load_cookies())
                 yield context.new_page()
             finally:

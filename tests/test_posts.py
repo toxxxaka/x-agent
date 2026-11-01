@@ -1,5 +1,6 @@
 import os
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("X_AGENT_DEBUG_LOG", "/tmp/x-agent-test.log")
 
@@ -62,10 +63,11 @@ class PostHelpersTest(unittest.TestCase):
         response = FakeResponse(
             {"result": {"rest_id": "555", "__typename": "Tweet"}}
         )
-        self.assertEqual(
-            posts.extract_created_post_url(response),
-            f"https://x.com/{posts.X_USERNAME}/status/555",
-        )
+        with patch.object(posts, "X_USERNAME", "demo_account"):
+            self.assertEqual(
+                posts.extract_created_post_url(response),
+                "https://x.com/demo_account/status/555",
+            )
 
     def test_status_url_with_share_query_is_normalized(self):
         url, status_id = posts._canonical_status_url(

@@ -1,6 +1,8 @@
 """Public, bearer-protected Streamable HTTP MCP endpoint."""
 import os
 import secrets
+import time
+from collections import defaultdict, deque
 
 import uvicorn
 from mcp.server.fastmcp import FastMCP
@@ -9,7 +11,18 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from .articles import create_article, publish_article_draft
-from .posts import create_post, create_thread, list_communities, reply_to_post, status
+from .doctor import doctor
+from .posts import (
+    create_post,
+    create_thread,
+    get_my_recent_posts,
+    get_operation_status,
+    list_communities,
+    reply_to_post,
+    resolve_operation,
+    resume_thread,
+    status,
+)
 
 TOKEN = os.environ.get("X_AGENT_MCP_TOKEN")
 HOST = os.environ.get("X_AGENT_MCP_HOST", "127.0.0.1")
@@ -27,6 +40,11 @@ def _configured_port() -> int:
 
 
 PORT = _configured_port()
+MAX_REQUEST_BYTES = int(os.environ.get("X_AGENT_HTTP_MAX_BYTES", "1048576"))
+RATE_LIMIT = int(os.environ.get("X_AGENT_HTTP_RATE_LIMIT", "30"))
+ALLOWED_HOSTS = {item.strip() for item in os.environ.get("X_AGENT_ALLOWED_HOSTS", "localhost,127.0.0.1,[::1]").split(",") if item.strip()}
+ALLOWED_ORIGINS = {item.strip() for item in os.environ.get("X_AGENT_ALLOWED_ORIGINS", "").split(",") if item.strip()}
+_REQUESTS: dict[str, deque[float]] = defaultdict(deque)
 
 SECURITY_HEADERS = {
     "Cache-Control": "no-store",
@@ -39,6 +57,22 @@ SECURITY_HEADERS = {
 
 class BearerTokenMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        host = request.headers.get("host", "").split(":", 1)[0]
+        if host and host not in ALLOWED_HOSTS:
+            return JSONResponse({"error": "invalid_host"}, status_code=400, headers=SECURITY_HEADERS)
+        origin = request.headers.get("origin")
+        if origin and origin not in ALLOWED_ORIGINS:
+            return JSONResponse({"error": "invalid_origin"}, status_code=403, headers=SECURITY_HEADERS)
+        if int(request.headers.get("content-length", "0") or 0) > MAX_REQUEST_BYTES:
+            return JSONResponse({"error": "request_too_large"}, status_code=413, headers=SECURITY_HEADERS)
+        client = request.client.host if request.client else "unknown"
+        now = time.monotonic()
+        requests = _REQUESTS[client]
+        while requests and now - requests[0] > 60:
+            requests.popleft()
+        if len(requests) >= RATE_LIMIT:
+            return JSONResponse({"error": "rate_limited"}, status_code=429, headers=SECURITY_HEADERS)
+        requests.append(now)
         if request.url.path == "/healthz":
             return JSONResponse({"ok": True}, headers=SECURITY_HEADERS)
         expected = f"Bearer {TOKEN}"
@@ -75,19 +109,49 @@ def x_status() -> dict:
 
 
 @mcp.tool()
+def x_doctor() -> dict:
+    """Read-only local configuration diagnostics. Does not contact X."""
+    return doctor()
+
+
+@mcp.tool()
+def get_x_operation_status(operation_id: str | None = None, idempotency_key: str | None = None) -> dict:
+    """Read-only status for a publication operation. UNCERTAIN requires manual resolution and is never retried automatically."""
+    return get_operation_status(operation_id, idempotency_key)
+
+
+@mcp.tool()
+def get_my_recent_x_posts(limit: int = 10) -> dict:
+    """Read locally confirmed publication URLs. Never contacts X or publishes."""
+    return get_my_recent_posts(limit)
+
+
+@mcp.tool()
+def resolve_x_operation(operation_id: str, published: bool, url: str | None = None) -> dict:
+    """Record a human decision for an UNCERTAIN operation; never retries or publishes."""
+    return resolve_operation(operation_id, published, url)
+
+
+@mcp.tool()
+def resume_x_thread(operation_id: str, posts: list[str], community: str | None = None, image_path: str | None = None) -> dict:
+    """Continue only the unconfirmed tail of a manually approved RESUMABLE thread."""
+    return resume_thread(operation_id, posts, community, image_path)
+
+
+@mcp.tool()
 def create_x_post(
-    text: str, community: str | None = None, image_path: str | None = None
+    text: str, community: str | None = None, image_path: str | None = None, idempotency_key: str | None = None
 ) -> dict:
     """Publish final approved text. community=None publishes to Everyone; community='<name>' requires exact Community selection. image_path is an optional absolute local image path; X upload and preview must be verified or the post aborts."""
-    return create_post(text, community=community, image_path=image_path)
+    return create_post(text, community=community, image_path=image_path, idempotency_key=idempotency_key)
 
 
 @mcp.tool()
 def create_x_thread(
-    posts: list[str], community: str | None = None, image_path: str | None = None
+    posts: list[str], community: str | None = None, image_path: str | None = None, idempotency_key: str | None = None
 ) -> dict:
     """Publish a sequential reply thread. community=None publishes root to Everyone; community='<name>' publishes root to that verified Community. image_path attaches only to the root and must be verified before publication."""
-    return create_thread(posts, community=community, image_path=image_path)
+    return create_thread(posts, community=community, image_path=image_path, idempotency_key=idempotency_key)
 
 
 @mcp.tool()
@@ -97,9 +161,9 @@ def list_x_communities() -> dict:
 
 
 @mcp.tool()
-def reply_x_post(post_url: str, text: str) -> dict:
+def reply_x_post(post_url: str, text: str, idempotency_key: str | None = None) -> dict:
     """Publish final approved text as a reply. Requires explicit user confirmation."""
-    return reply_to_post(post_url, text)
+    return reply_to_post(post_url, text, idempotency_key=idempotency_key)
 
 
 @mcp.tool()

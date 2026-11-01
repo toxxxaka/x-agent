@@ -1,3 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "x-agent-manager"
+version = "0.3.0"
+description = "Fail-closed self-hosted X publishing automation"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "playwright==1.63.0",
+  "mcp==1.30.0",
+  "uvicorn==0.53.0",
+  "starlette==1.7.0",
+]
+
+[project.scripts]
+x-agent = "x_agent.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["x_agent*"]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 100

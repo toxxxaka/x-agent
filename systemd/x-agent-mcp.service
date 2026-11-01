@@ -5,18 +5,17 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/opt/x-agent
+User=xagent
+WorkingDirectory=/srv/x-agent
 EnvironmentFile=/etc/x-agent/mcp.env
-Environment=X_AGENT_MEDIA_STAGE_DIR=/root/snap/chromium/common/x-agent-media
-ExecStart=/opt/x-agent/venv/bin/python3 -m x_agent.mcp_http
+Environment=X_AGENT_MEDIA_STAGE_DIR=/var/lib/x-agent/media
+ExecStart=/srv/x-agent/.venv/bin/python3 -m x_agent.mcp_http
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
-BindPaths=/root/snap/chromium/common/x-agent-media
-ReadWritePaths=/opt/x-agent /var/lock /root/snap/chromium/common/x-agent-media
+ReadWritePaths=/var/lib/x-agent
 
 [Install]
 WantedBy=multi-user.target

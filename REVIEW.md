@@ -9,6 +9,14 @@ The project is suitable for a cautious public beta: its external side effects ar
 
 No live X action was used during this review. Static checks found no committed cookie values, bearer tokens, private keys, or AWS-style access keys in the current source tree. Historical commits were searched for secret-related identifiers without printing potential values; identifiers alone were references to cookie handling, not credentials.
 
+## 2026-11-01 release audit addendum
+
+The full reachable Git history was searched for common private-key, GitHub token, AWS-key and X-cookie markers. `gitleaks` was not installed in the review environment, so the check used `git log --all -G` plus a current-tree pattern scan. No credential values were found. If a credential was ever committed outside these patterns, rotate it immediately and use GitHub's secret-scanning alerts; this review does not rewrite history.
+
+Portability issues found before this release pass were corrected: the default account handle, cookie path, log path, nginx hostname, Community example and service-specific root paths were author-specific. Public defaults now use the invoking user's state/config locations; nginx and systemd are explicitly templates. The README now starts with an offline demo and no longer claims an author deployment layout is required.
+
+The remaining intentional limitations are documented below: live X UI compatibility cannot be established without a user-controlled account, and an `UNCERTAIN` outcome deliberately requires a human decision rather than automatic retry.
+
 ## Findings fixed in this branch
 
 | Priority | Finding | Resolution |

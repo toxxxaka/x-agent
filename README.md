@@ -73,19 +73,42 @@ tests/             Unit tests
 
 Historical experiments, local backups, logs, screenshots, cookies, virtual environments, and environment files are deployment artefacts, not production source.
 
-## Prerequisites
+## Quickstart: safe local demo (no X account)
+
+The demo uses the same journal, idempotency and thread-resume paths as live mode, but never starts Chromium or contacts X.
+
+```bash
+git clone https://github.com/toxxxaka/x-agent.git
+cd x-agent
+python3 -m venv .venv
+.venv/bin/pip install .
+export X_AGENT_DEMO=1
+printf '%s' 'hello from demo' | .venv/bin/x-agent post --publish --idempotency-key demo-1
+.venv/bin/x-agent operation --idempotency-key demo-1
+```
+
+Try a safe interrupted thread and resume it:
+
+```bash
+export X_AGENT_DEMO_FAIL_AFTER=1
+printf '%s' '["root", "reply", "tail"]' | .venv/bin/x-agent thread --publish --idempotency-key demo-thread
+unset X_AGENT_DEMO_FAIL_AFTER
+printf '%s' '["root", "reply", "tail"]' | .venv/bin/x-agent resume-thread OPERATION_ID
+```
+
+## Prerequisites for a live account
 
 - Linux with Python 3.11+.
 - Playwright and Chromium or Chrome.
 - An X account authenticated in a browser session you control.
 - A cookie export available only on the deployment host.
 
-Example setup:
+Install from the project directory:
 
 ```bash
-python3 -m venv venv
-./venv/bin/pip install playwright mcp uvicorn starlette
-./venv/bin/playwright install chromium
+python3 -m venv .venv
+.venv/bin/pip install .
+.venv/bin/playwright install chromium
 ```
 
 ## Session cookies
@@ -93,14 +116,13 @@ python3 -m venv venv
 Store the cookie export outside the repository, for example:
 
 ```text
-/opt/x-agent/x_cookies.json
+~/.config/x-agent/x_cookies.json
 ```
 
 Protect it:
 
 ```bash
-sudo chown root:root /opt/x-agent/x_cookies.json
-sudo chmod 600 /opt/x-agent/x_cookies.json
+chmod 600 ~/.config/x-agent/x_cookies.json
 ```
 
 Never commit cookies, tokens, browser profiles, logs, screenshots, or .env files. Refresh the cookie export from a trusted browser session when x_status reports an expired session.
@@ -110,29 +132,30 @@ Never commit cookies, tokens, browser profiles, logs, screenshots, or .env files
 The CLI reads text from standard input rather than process arguments.
 
 ```bash
-PYTHONPATH=/opt/x-agent /opt/x-agent/venv/bin/python3 -m x_agent.cli status
+.venv/bin/x-agent doctor
+.venv/bin/x-agent status
 
 printf '%s' 'Final approved text' |
-  PYTHONPATH=/opt/x-agent /opt/x-agent/venv/bin/python3 -m x_agent.cli post --publish
+  .venv/bin/x-agent post --publish
 
 printf '%s' 'Final approved text' |
-  PYTHONPATH=/opt/x-agent /opt/x-agent/venv/bin/python3 -m x_agent.cli post --publish --image /absolute/path/to/image.png
+  .venv/bin/x-agent post --publish --image /absolute/path/to/image.png
 
 printf '%s' '["1/2 Root", "2/2 Reply"]' |
-  PYTHONPATH=/opt/x-agent /opt/x-agent/venv/bin/python3 -m x_agent.cli thread --publish --image /absolute/path/to/image.png
+  .venv/bin/x-agent thread --publish --image /absolute/path/to/image.png
 
 printf '%s' 'Final approved text' |
-  PYTHONPATH=/opt/x-agent /opt/x-agent/venv/bin/python3 -m x_agent.cli post --publish --community 'Hacking / Ethical Hacking'
+  .venv/bin/x-agent post --publish --community 'Exact Community Name'
 
 printf '%s' 'Final approved reply' |
-  PYTHONPATH=/opt/x-agent /opt/x-agent/venv/bin/python3 -m x_agent.cli reply https://x.com/account/status/123 --publish
+  .venv/bin/x-agent reply https://x.com/account/status/123 --publish
 
 printf '%s' '## Heading\n\nArticle body.' |
-  PYTHONPATH=/opt/x-agent /opt/x-agent/venv/bin/python3 -m x_agent.cli article \
+  .venv/bin/x-agent article \
   --title 'Article title' --cover /absolute/path/cover.png
 
 printf '%s' '## Heading\n\nArticle body.' | \
-  PYTHONPATH=/opt/x-agent /opt/x-agent/venv/bin/python3 -m x_agent.cli article-publish \
+  .venv/bin/x-agent article-publish \
   https://x.com/compose/articles/edit/123 --title 'Article title' --publish
 ```
 
@@ -183,7 +206,7 @@ Use list_x_communities() before publishing when the display name is uncertain.
 
 Pass an absolute local path through image_path (MCP) or --image (CLI). Supported formats are JPG, JPEG, PNG, WEBP, and GIF. A thread can have an image on the root post. Before X receives it, x-agent copies the file byte-for-byte into Chromium's private staging directory, because Snap Chromium may not be allowed to read arbitrary source paths. The staging copy is removed after every attempt. For the provided systemd unit, create `/root/snap/chromium/common/x-agent-media` with mode `0700` before starting the service.
 
-The service adds `Cache-Control: no-store` and `X-Content-Type-Options: nosniff` to MCP responses. Before posting, the agent requires:
+The service adds `Cache-Control: no-store` and `X-Content-Type-Options: nosniff` to MCP responses. Configure `X_AGENT_MEDIA_STAGE_DIR` when your Chromium sandbox cannot read the selected image; use a private, service-writable directory rather than a root-specific path. Before posting, the agent requires:
 
 1. An attachment preview rendered by X in the active composer.
 2. A successful media-upload response.
@@ -192,13 +215,13 @@ If either proof is missing, publication aborts without creating a post.
 
 ## Diagnostics
 
-Runtime log:
+Runtime logs default to `~/.local/state/x-agent/x-agent.log` and rotate automatically. Override the location with `X_AGENT_DEBUG_LOG`.
 
 ```text
-/var/log/x-agent/thread-debug.log
+~/.local/state/x-agent/x-agent.log
 ```
 
-Failure screenshots are stored under /var/log/x-agent/. Diagnostics omit post bodies, cookie values, bearer tokens, and full upload URLs. They retain operation stage, selector decision, audience state, response status, post IDs, and post URLs.
+Failure screenshots are stored under `~/.local/state/x-agent/artifacts/` by default. Diagnostics omit post bodies, cookie values, bearer tokens, and full upload URLs. They retain operation stage, selector decision, audience state, response status, post IDs, and post URLs.
 
 ## Testing
 
@@ -209,7 +232,7 @@ PYTHONPATH=. ./venv/bin/python3 -m unittest discover -s tests -v
 
 ## Deployment notes
 
-Keep reviewed source in a Git repository, for example /home/ai/x-agent-build, and deploy a reviewed copy to /opt/x-agent. Restart x-agent-mcp.service after changing long-running MCP code; CLI executions load fresh code every run.
+Keep reviewed source in a Git repository and run it from a dedicated non-root service account. The provided systemd and nginx files are templates: replace their paths, user, and hostname before installation. Restart the long-running MCP service after changing its code; CLI executions load fresh code every run.
 
 ## Public-project documentation
 

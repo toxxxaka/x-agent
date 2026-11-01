@@ -3,7 +3,7 @@ import os
 import stat
 from pathlib import Path
 
-COOKIES_FILE = Path(os.environ.get("X_AGENT_COOKIES_FILE", "/opt/x-agent/x_cookies.json"))
+COOKIES_FILE = Path(os.environ.get("X_AGENT_COOKIES_FILE", Path.home() / ".config/x-agent/x_cookies.json"))
 
 
 def load_cookies() -> list[dict]:
