@@ -1,4 +1,4 @@
-# X-agent
+# X-Agent Manager
 
 [![CI](https://github.com/toxxxaka/x-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/toxxxaka/x-agent/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white&style=flat-square)](https://www.python.org/)
@@ -18,6 +18,8 @@ x-agent lets an AI assistant or local operator publish reviewed posts, linear th
 - Select an X Community by exact name, with fail-closed verification.
 - List Communities available to the current account without publishing.
 - Attach one image to a post or to the root of a thread.
+- Create and verify X Article drafts in the dedicated Articles editor.
+- Publish a previously verified Article draft to Everyone after explicit approval.
 - Use the project through CLI, stdio MCP, or bearer-protected Streamable HTTP MCP.
 
 ## Architecture
@@ -30,7 +32,7 @@ Chat or local operator
         +-- Streamable HTTP MCP (Bearer token)
                     |
                     v
-               x_agent.posts
+           x_agent.posts / articles
                     |
           Playwright and Chromium
                     |
@@ -39,7 +41,7 @@ Chat or local operator
                    x.com
 ```
 
-The chat agent drafts and obtains explicit approval. The execution layer receives only final text and performs the external action. x_agent/posts.py owns browser interaction, audience selection, media verification, reply chaining, and sanitized diagnostics.
+The chat agent drafts and obtains explicit approval. The execution layer receives only final text and performs the external action. `x_agent/posts.py` owns browser interaction, audience selection, media verification, reply chaining, and sanitized diagnostics. `x_agent/articles.py` owns the separate X Articles editor and verifies title, cover, and visible body order before publishing.
 
 ## Safety model
 
@@ -50,6 +52,7 @@ The implementation fails closed:
 - A requested Community must be uniquely matched, selected, and confirmed. Failure never falls back to Everyone.
 - A requested image must produce both an X composer preview and a successful upload response. Otherwise Post is never clicked.
 - A thread stops at the first failed reply and reports already-published URLs; it never continues blindly.
+- An Article with a missing cover or incomplete/reordered preview remains a draft.
 
 ## Repository layout
 
@@ -58,6 +61,7 @@ x_agent/
   browser.py       Browser setup, cookies, authentication checks
   cookies.py       Cookie-file handling
   posts.py         Posts, replies, threads, Communities, media verification
+  articles.py      X Article drafts, preview verification, and publication
   cli.py           stdin-based command-line interface
   mcp_server.py    Dependency-free stdio MCP server
   mcp_http.py      Streamable HTTP MCP server with bearer authentication
@@ -122,6 +126,14 @@ printf '%s' 'Final approved text' |
 
 printf '%s' 'Final approved reply' |
   PYTHONPATH=/opt/x-agent /opt/x-agent/venv/bin/python3 -m x_agent.cli reply https://x.com/account/status/123 --publish
+
+printf '%s' '## Heading\n\nArticle body.' |
+  PYTHONPATH=/opt/x-agent /opt/x-agent/venv/bin/python3 -m x_agent.cli article \
+  --title 'Article title' --cover /absolute/path/cover.png
+
+printf '%s' '## Heading\n\nArticle body.' | \
+  PYTHONPATH=/opt/x-agent /opt/x-agent/venv/bin/python3 -m x_agent.cli article-publish \
+  https://x.com/compose/articles/edit/123 --title 'Article title' --publish
 ```
 
 ## MCP tools
@@ -133,6 +145,8 @@ printf '%s' 'Final approved reply' |
 | create_x_post(text, community=None, image_path=None) | Yes | Publish one approved post. community=None means Everyone. |
 | create_x_thread(posts, community=None, image_path=None) | Yes | Publish a linear reply thread; image applies to root only. |
 | reply_x_post(post_url, text) | Yes | Reply to an existing post. |
+| create_x_article(title, body_markdown, cover_image_path, publish=False) | Yes | Create a verified X Article draft or publish to Everyone. |
+| publish_x_article_draft(draft_url, title, body_markdown) | Yes | Re-verify and publish an approved existing Article draft to Everyone. |
 
 ## HTTP MCP
 
@@ -143,6 +157,8 @@ Create /etc/x-agent/mcp.env with root-only permissions:
 ```bash
 X_AGENT_MCP_TOKEN=replace-with-a-long-random-value
 X_AGENT_X_USERNAME=your_x_handle
+X_AGENT_MCP_HOST=127.0.0.1
+X_AGENT_MCP_PORT=8765
 ```
 
 Install systemd/x-agent-mcp.service as /etc/systemd/system/x-agent-mcp.service, then:
@@ -187,13 +203,20 @@ Failure screenshots are stored under /var/log/x-agent/. Diagnostics omit post bo
 ## Testing
 
 ```bash
-PYTHONPATH=. ./venv/bin/python3 tests/test_posts.py
-./venv/bin/python3 -m py_compile x_agent/*.py
+PYTHONPATH=. ./venv/bin/python3 -m unittest discover -s tests -v
+./venv/bin/python3 -m compileall -q x_agent
 ```
 
 ## Deployment notes
 
 Keep reviewed source in a Git repository, for example /home/ai/x-agent-build, and deploy a reviewed copy to /opt/x-agent. Restart x-agent-mcp.service after changing long-running MCP code; CLI executions load fresh code every run.
+
+## Public-project documentation
+
+- [Architecture](docs/architecture.md) describes execution paths and trust boundaries.
+- [Operations](docs/operations.md) covers deployment, secrets, media staging, and logs.
+- [Troubleshooting](docs/troubleshooting.md) lists safe responses to common failures.
+- [Contributing](CONTRIBUTING.md) and [Security policy](SECURITY.md) define contribution and disclosure expectations.
 
 ## License
 
