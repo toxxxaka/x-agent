@@ -6,6 +6,8 @@
 
 Private, self-hosted X publishing automation built around the authenticated X web UI.
 
+![X-Agent Manager: local browser automation with an operation journal and safety checks](docs/assets/x-agent-manager-hero.png)
+
 x-agent lets an AI assistant or local operator publish reviewed posts, linear threads, replies, and Community posts through Playwright. It does not require X API credits and keeps the authenticated browser session on infrastructure you control.
 
 > This is browser automation, not an official X API client. X may change its UI, authentication behaviour, or terms at any time. Use it only with an account you control and in accordance with X's rules.
@@ -53,6 +55,15 @@ The implementation fails closed:
 - A requested image must produce both an X composer preview and a successful upload response. Otherwise Post is never clicked.
 - A thread stops at the first failed reply and reports already-published URLs; it never continues blindly.
 - An Article with a missing cover or incomplete/reordered preview remains a draft.
+
+![Publishing safety flow](docs/assets/publishing-safety-flow.svg)
+
+| State | Meaning | Safe next action |
+| --- | --- | --- |
+| `COMPLETED` | X returned evidence and the URL was journaled. | Reuse the returned result. |
+| `FAILED` | No side effect was confirmed. | Fix the reported cause and create a new operation. |
+| `RESUMABLE` | A thread stopped after confirmed steps. | Review saved URLs, then explicitly resume its unconfirmed tail. |
+| `UNCERTAIN` | The publish click was sent but X did not confirm it. | Inspect X and record a human `resolve`; never retry blindly. |
 
 ## Repository layout
 

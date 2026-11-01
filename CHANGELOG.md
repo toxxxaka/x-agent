@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 — 2026-11-01
+
+- Added an SQLite/WAL operation journal, idempotency keys, explicit `UNCERTAIN` handling and safe thread resume.
+- Added an offline `X_AGENT_DEMO=1` quickstart that exercises the same operation journal without starting a browser or contacting X.
+- Added `doctor`, operation status, local recent-post history, structured errors and rotating JSON diagnostics.
+- Made public defaults portable and replaced author-specific deployment examples with templates.
+
 ## Unreleased
 
 ### Added
