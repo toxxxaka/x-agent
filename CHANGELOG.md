@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.3.0 — 2026-11-01
+
+- Added an SQLite/WAL operation journal, idempotency keys, explicit `UNCERTAIN` handling and safe thread resume.
+- Added an offline `X_AGENT_DEMO=1` quickstart that exercises the same operation journal without starting a browser or contacting X.
+- Added `doctor`, operation status, local recent-post history, structured errors and rotating JSON diagnostics.
+- Made public defaults portable and replaced author-specific deployment examples with templates.
+
+## Unreleased
+
+### Added
+
+- Dedicated X Articles workflow with cover upload verification, ordered preview checks, draft creation, and explicit draft publication.
+- Community picker support for virtualized lists, so a Community can be found after normal UI scrolling rather than falling back to public posting.
+- `publish_x_article_draft` in CLI, stdio MCP, and HTTP MCP; it re-checks the supplied Markdown against preview before publication.
+- Public-release documentation, contribution guidance, architecture and operations guides, automated linting, and expanded unit tests.
+
+### Changed
+
+- Article text is inserted in bounded ordered chunks and verified before preview, preventing partial Draft.js writes from being mistaken for complete content.
+- HTTP MCP responses consistently carry no-store, anti-framing, no-referrer, and restrictive permissions headers.
+- HTTP bind address and port are configurable; loopback remains the default.
+
+### Security
+
+- Cookie loading rejects symbolic links and non-regular files in addition to permissive modes.
+- HTTP MCP refuses a missing or shorter-than-32-character bearer token at startup.
+- Upgraded the MCP SDK from 1.26.0 to 1.30.0 to address four published HTTP transport and task-handling advisories.
+
 ## 2026-09-29 - Snap Chromium media upload staging
 
 ### Fixed

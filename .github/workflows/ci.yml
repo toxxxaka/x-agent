@@ -4,17 +4,38 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    env:
+      X_AGENT_DEMO: "1"
+      X_AGENT_BLOCK_X_NETWORK: "1"
+      X_AGENT_DB_PATH: ${{ runner.temp }}/x-agent-operations.sqlite3
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - name: Install dependencies
-        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
+      - name: Verify package installation
+        run: python -m pip install .
       - name: Compile source
-        run: python -m py_compile x_agent/*.py
+        run: python -m compileall -q x_agent
       - name: Run unit tests
-        run: PYTHONPATH=. python tests/test_posts.py
+        run: PYTHONPATH=. python -m unittest discover -s tests -v
+      - name: Lint
+        run: ruff check .
+      - name: Verify installed dependency graph
+        run: python -m pip check

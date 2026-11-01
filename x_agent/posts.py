@@ -1,22 +1,27 @@
 """Reliable X publishing primitives with sanitized diagnostics."""
 
+import hashlib
+import json
 import os
 import re
 import shutil
 import tempfile
 import time
-from pathlib import Path
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
-from playwright.sync_api import Locator, Page, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import Locator, Page
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from .browser import ensure_authenticated, x_page
 from .debug import logger
+from .errors import UncertainOperationError, classify_error
+from .journal import OperationJournal
 
 HOME_URL = "https://x.com/home"
 COMPOSE_URL = "https://x.com/compose/post"
-X_USERNAME = os.environ.get("X_AGENT_X_USERNAME", "pepetheshneine")
+X_USERNAME = os.environ.get("X_AGENT_X_USERNAME", "")
 STATUS_RE = re.compile(
     r"^https://(?:www\.)?x\.com/(?P<user>[^/?#]+)/status/(?P<id>\d+)"
     r"(?:[/?#].*)?$"
@@ -236,16 +241,35 @@ def _composer_with_audience(page: Page, editor: Locator) -> Locator:
         _wait_for_audience_button(page, editor)
         return editor
     except RuntimeError:
-        logger.info("audience composer_fallback=direct_url")
-    page.goto(COMPOSE_URL, wait_until="domcontentloaded", timeout=60_000)
+        logger.info("audience composer_fallback=post_modal")
+    # In the current X UI, navigating to /compose/post or using the inline
+    # composer omits the Community picker. Clicking the real sidebar Post
+    # control opens the modal that exposes the verified audience selector.
+    page.goto(HOME_URL, wait_until="domcontentloaded", timeout=60_000)
     page.wait_for_timeout(1_500)
     ensure_authenticated(page)
     dismiss_cookie_consent(page)
-    direct_editor = _editor(page)
-    if direct_editor is None:
-        raise RuntimeError("X Community composer editor was not found")
-    _wait_for_audience_button(page, direct_editor)
-    return direct_editor
+    post_control = page.get_by_label("Post")
+    modal_editor: Locator | None = None
+    for index in range(post_control.count()):
+        control = post_control.nth(index)
+        if not control.is_visible():
+            continue
+        control.click(timeout=15_000)
+        page.wait_for_timeout(1_000)
+        dialogs = page.locator('[role="dialog"]')
+        for dialog_index in range(dialogs.count()):
+            dialog = dialogs.nth(dialog_index)
+            if dialog.is_visible():
+                modal_editor = _editor(page, dialog)
+                if modal_editor is not None:
+                    break
+        if modal_editor is not None:
+            break
+    if modal_editor is None:
+        raise RuntimeError("X Community post modal composer was not found")
+    _wait_for_audience_button(page, modal_editor)
+    return modal_editor
 
 
 def _audience_button(page: Page, editor: Locator) -> Locator:
@@ -291,11 +315,22 @@ def select_community(page: Page, editor: Locator, community: str) -> str:
     """Select and verify a Community before text is entered. Never falls back."""
     requested = _normalise_community_name(community)
     button = _open_community_picker(page, editor)
-    matches = [
-        (item, name)
-        for item, name in _community_menu_items(page)
-        if _normalise_community_name(name) == requested
-    ]
+    matches: list[tuple[Locator, str]] = []
+    # X virtualizes the Community list. The requested Community may not be
+    # rendered until the picker is scrolled, even though it is available.
+    for page_index in range(12):
+        items = _community_menu_items(page)
+        matches = [
+            (item, name)
+            for item, name in items
+            if _normalise_community_name(name) == requested
+        ]
+        if len(matches) == 1 or page_index == 11:
+            break
+        if items:
+            items[-1][0].hover(timeout=5_000)
+        page.mouse.wheel(0, 640)
+        page.wait_for_timeout(350)
     logger.info(
         "audience selection requested=true available_count=%d exact_matches=%d",
         len(_community_menu_items(page)),
@@ -402,8 +437,12 @@ def extract_created_post_url(response: Any) -> str:
         raise RuntimeError("CreateTweet response was not valid JSON") from exc
     if not result or not result.get("id"):
         logger.info("create_tweet tweet_id_found=false")
-        raise RuntimeError(
+        raise UncertainOperationError(
             "Post was submitted but a Tweet rest_id was not found in CreateTweet response"
+        )
+    if not X_USERNAME:
+        raise UncertainOperationError(
+            "CreateTweet was confirmed but X_AGENT_X_USERNAME is not configured"
         )
     logger.info("create_tweet tweet_id_found=true")
     return f"https://x.com/{X_USERNAME}/status/{result['id']}"
@@ -785,22 +824,32 @@ def _submit(
     editor.fill(text)
     logger.info("%s editor_found=true chars=%d", label, len(text))
     button = _publish_button(page, editor, label)
-    with page.expect_response(
-        lambda response: "CreateTweet" in response.url,
-        timeout=30_000,
-    ) as response_info:
-        button.click(timeout=15_000)
+    try:
+        with page.expect_response(
+            lambda response: "CreateTweet" in response.url,
+            timeout=30_000,
+        ) as response_info:
+            button.click(timeout=15_000)
+    except PlaywrightTimeoutError as exc:
+        raise UncertainOperationError(
+            "X accepted the publish click but did not return CreateTweet confirmation"
+        ) from exc
     logger.info("%s request_captured=true", label)
     url = extract_created_post_url(response_info.value)
     logger.info("%s complete=true url=%s", label, url)
-    return {"success": True, "url": url, "text": text}
+    return {"success": True, "url": url}
 
 
 def _save_failure_screenshot(page: Page, name: str) -> None:
     safe_name = re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-")
     try:
+        artifacts = Path(os.environ.get(
+            "X_AGENT_ARTIFACT_DIR",
+            str(Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "x-agent" / "artifacts"),
+        ))
+        artifacts.mkdir(parents=True, exist_ok=True)
         page.screenshot(
-            path=f"/var/log/x-agent/{safe_name}-failure.png",
+            path=str(artifacts / f"{safe_name}-failure.png"),
             full_page=True,
         )
         logger.info("%s failure_screenshot_saved=true", name)
@@ -938,80 +987,277 @@ def _create_reply_on_page(
         raise
 
 
-def create_post(
-    text: str, community: str | None = None, image_path: str | None = None
+def _operation_fingerprint(operation_type: str, payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _default_key(operation_type: str, payload_hash: str) -> str:
+    window = max(1, int(os.environ.get("X_AGENT_DEDUP_WINDOW_SECONDS", "300")))
+    return f"derived:{operation_type}:{payload_hash[:24]}:{int(time.time() // window)}"
+
+
+def _operation_payload(
+    operation_type: str,
+    text_items: list[str],
+    community: str | None = None,
+    image_path: str | None = None,
+    reply_to: str | None = None,
 ) -> dict[str, Any]:
+    media_hash = None
+    if image_path:
+        media_hash = hashlib.sha256(Path(image_path).read_bytes()).hexdigest()
+    return {
+        "account": X_USERNAME or "unconfigured",
+        "operation_type": operation_type,
+        "text_hashes": [hashlib.sha256(item.encode()).hexdigest() for item in text_items],
+        "community": _normalise_community_name(community) if community else None,
+        "media_hash": media_hash,
+        "reply_to": reply_to,
+    }
+
+
+def _journal_response(record: dict[str, Any]) -> dict[str, Any]:
+    response = {
+        "success": record["status"] == "COMPLETED",
+        "operation_id": record["id"],
+        "status": record["status"],
+    }
+    if record.get("result"):
+        response.update(record["result"])
+    if record.get("error"):
+        response["error"] = record["error"]
+    return response
+
+
+def _demo_url(operation_id: str, index: int) -> str:
+    return f"https://demo.invalid/status/{operation_id.replace('-', '')[:12]}{index:03d}"
+
+
+def _run_single_operation(
+    operation_type: str,
+    payload: dict[str, Any],
+    action: Any,
+    idempotency_key: str | None,
+) -> dict[str, Any]:
+    payload_hash = _operation_fingerprint(operation_type, payload)
+    key = idempotency_key or _default_key(operation_type, payload_hash)
+    journal = OperationJournal()
+    try:
+        record, created = journal.begin(operation_type, key, payload_hash)
+        if not created:
+            return _journal_response(journal.get(operation_id=record["id"]))
+        if os.environ.get("X_AGENT_DEMO") == "1":
+            if os.environ.get("X_AGENT_DEMO_UNCERTAIN") == "1":
+                error = UncertainOperationError().as_dict()
+                return _journal_response(journal.finish(record["id"], "UNCERTAIN", error=error))
+            result = {"url": _demo_url(record["id"], 0), "demo": True}
+            journal.step(record["id"], 0, operation_type, "COMPLETED", result["url"])
+            return _journal_response(journal.finish(record["id"], "COMPLETED", result=result))
+        try:
+            result = action()
+        except UncertainOperationError as exc:
+            journal.step(record["id"], 0, operation_type, "UNCERTAIN", error=exc.as_dict())
+            return _journal_response(journal.finish(record["id"], "UNCERTAIN", error=exc.as_dict()))
+        except Exception as exc:
+            error = classify_error(exc).as_dict()
+            journal.step(record["id"], 0, operation_type, "FAILED", error=error)
+            return _journal_response(journal.finish(record["id"], "FAILED", error=error))
+        journal.step(record["id"], 0, operation_type, "COMPLETED", result.get("url"))
+        return _journal_response(journal.finish(record["id"], "COMPLETED", result=result))
+    finally:
+        journal.close()
+
+
+def create_post(
+    text: str,
+    community: str | None = None,
+    image_path: str | None = None,
+    idempotency_key: str | None = None,
+) -> dict[str, Any]:
+    clean_text = _validate_text(text)
     image_path = _validate_image_path(image_path)
+    payload = _operation_payload("post", [clean_text], community, image_path)
+    return _run_single_operation(
+        "post",
+        payload,
+        lambda: _create_post_live(clean_text, community, image_path),
+        idempotency_key,
+    )
+
+
+def _create_post_live(text: str, community: str | None, image_path: str | None) -> dict[str, Any]:
     with x_page() as page:
-        return _create_post_on_page(
-            page, text, community=community, image_path=image_path
-        )
+        return _create_post_on_page(page, text, community=community, image_path=image_path)
 
 
-def reply_to_post(post_url: str, text: str) -> dict[str, Any]:
+def reply_to_post(
+    post_url: str, text: str, idempotency_key: str | None = None
+) -> dict[str, Any]:
     canonical_url, _ = _canonical_status_url(post_url)
+    clean_text = _validate_text(text)
+    payload = _operation_payload("reply", [clean_text], reply_to=canonical_url)
+    return _run_single_operation(
+        "reply",
+        payload,
+        lambda: _reply_live(canonical_url, clean_text),
+        idempotency_key,
+    )
+
+
+def _reply_live(post_url: str, text: str) -> dict[str, Any]:
     with x_page() as page:
-        return _create_reply_on_page(page, canonical_url, text, 1)
+        return _create_reply_on_page(page, post_url, text, 1)
 
 
 def create_thread(
     posts: Iterable[str],
     community: str | None = None,
     image_path: str | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     items = [_validate_text(item) for item in posts]
     if not items:
         raise ValueError("Thread is empty")
     image_path = _validate_image_path(image_path)
-    logger.info(
-        "THREAD start posts=%d community_requested=%s",
-        len(items),
-        community is not None,
-    )
-    published: list[dict[str, Any]] = []
+    payload = _operation_payload("thread", items, community, image_path)
+    payload_hash = _operation_fingerprint("thread", payload)
+    key = idempotency_key or _default_key("thread", payload_hash)
+    journal = OperationJournal()
     try:
-        with x_page() as page:
-            logger.info("THREAD x_page_entered=true")
-            root = _create_post_on_page(
-                page, items[0], community=community, image_path=image_path
-            )
-            published.append(root)
-            parent_url = root["url"]
-            logger.info("THREAD root_complete=true parent_url=%s", parent_url)
+        record, created = journal.begin("thread", key, payload_hash)
+        if not created:
+            return _journal_response(journal.get(operation_id=record["id"]))
+        if os.environ.get("X_AGENT_DEMO") == "1":
+            if os.environ.get("X_AGENT_DEMO_UNCERTAIN") == "1":
+                error = UncertainOperationError().as_dict()
+                return _journal_response(journal.finish(record["id"], "UNCERTAIN", error=error))
+            published = []
+            for index, _ in enumerate(items):
+                fail_after = int(os.environ.get("X_AGENT_DEMO_FAIL_AFTER", "-1"))
+                if index == fail_after:
+                    error = {"code": "DEMO_INTERRUPTED", "message": "Demo interruption", "action": "Run resume with the same posts."}
+                    return _journal_response(journal.finish(record["id"], "RESUMABLE", error=error))
+                url = _demo_url(record["id"], index)
+                journal.step(record["id"], index, "post" if index == 0 else "reply", "COMPLETED", url)
+                published.append({"success": True, "url": url, "demo": True})
+            return _journal_response(journal.finish(record["id"], "COMPLETED", result={"posts": published, "demo": True}))
+        published = []
+        try:
+            with x_page() as page:
+                root = _create_post_on_page(page, items[0], community=community, image_path=image_path)
+                published.append(root)
+                journal.step(record["id"], 0, "post", "COMPLETED", root["url"])
+                parent_url = root["url"]
+                for index, text in enumerate(items[1:], start=1):
+                    time.sleep(2)
+                    reply = _create_reply_on_page(page, parent_url, text, index)
+                    published.append(reply)
+                    parent_url = reply["url"]
+                    journal.step(record["id"], index, "reply", "COMPLETED", parent_url)
+        except UncertainOperationError as exc:
+            journal.step(record["id"], len(published), "reply", "UNCERTAIN", error=exc.as_dict())
+            return _journal_response(journal.finish(record["id"], "UNCERTAIN", error=exc.as_dict()))
+        except Exception as exc:
+            error = classify_error(exc).as_dict()
+            status = "RESUMABLE" if published else "FAILED"
+            return _journal_response(journal.finish(record["id"], status, error=error))
+        return _journal_response(journal.finish(record["id"], "COMPLETED", result={"posts": published}))
+    finally:
+        journal.close()
 
-            for index, text in enumerate(items[1:], start=1):
-                logger.info(
-                    "THREAD starting_reply=%d parent_url=%s",
-                    index,
-                    parent_url,
-                )
-                time.sleep(2)
-                reply = _create_reply_on_page(
-                    page,
-                    parent_url,
-                    text,
-                    index,
-                )
-                published.append(reply)
-                parent_url = reply["url"]
-                logger.info(
-                    "THREAD reply_complete=%d new_parent_url=%s",
-                    index,
-                    parent_url,
-                )
 
-            logger.info("THREAD complete posts=%d", len(published))
-            return {"success": True, "posts": published}
-    except Exception:
-        logger.exception(
-            "THREAD failed published_count=%d published_urls=%s",
-            len(published),
-            [item["url"] for item in published],
-        )
-        raise
+def get_operation_status(operation_id: str | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
+    journal = OperationJournal()
+    try:
+        return journal.get(operation_id, idempotency_key)
+    finally:
+        journal.close()
+
+
+def resolve_operation(operation_id: str, published: bool, url: str | None = None) -> dict[str, Any]:
+    """Persist a human decision for an uncertain operation without retrying it."""
+    journal = OperationJournal()
+    try:
+        return _journal_response(journal.resolve(operation_id, published, url))
+    finally:
+        journal.close()
+
+
+def resume_thread(
+    operation_id: str,
+    posts: Iterable[str],
+    community: str | None = None,
+    image_path: str | None = None,
+) -> dict[str, Any]:
+    """Continue only the unconfirmed tail of a manually approved thread."""
+    items = [_validate_text(item) for item in posts]
+    if not items:
+        raise ValueError("Thread is empty")
+    image_path = _validate_image_path(image_path)
+    payload = _operation_payload("thread", items, community, image_path)
+    payload_hash = _operation_fingerprint("thread", payload)
+    journal = OperationJournal()
+    try:
+        record = journal.get(operation_id=operation_id)
+        if record["operation_type"] != "thread" or record["payload_hash"] != payload_hash:
+            raise ValueError("resume payload does not match the original thread")
+        journal.resume(operation_id)
+        confirmed = [step for step in record["steps"] if step["status"] == "COMPLETED" and step.get("url")]
+        if not confirmed:
+            raise ValueError("thread has no confirmed root post; create a new operation instead")
+        start = len(confirmed)
+        published = [{"success": True, "url": step["url"]} for step in confirmed]
+        parent_url = confirmed[-1]["url"]
+        if os.environ.get("X_AGENT_DEMO") == "1":
+            for index in range(start, len(items)):
+                url = _demo_url(operation_id, index)
+                journal.step(operation_id, index, "reply", "COMPLETED", url)
+                published.append({"success": True, "url": url, "demo": True})
+            return _journal_response(journal.finish(operation_id, "COMPLETED", result={"posts": published, "demo": True, "resumed": True}))
+        try:
+            with x_page() as page:
+                for index, text in enumerate(items[start:], start=start):
+                    reply = _create_reply_on_page(page, parent_url, text, index)
+                    journal.step(operation_id, index, "reply", "COMPLETED", reply["url"])
+                    published.append(reply)
+                    parent_url = reply["url"]
+        except UncertainOperationError as exc:
+            journal.step(operation_id, len(published), "reply", "UNCERTAIN", error=exc.as_dict())
+            return _journal_response(journal.finish(operation_id, "UNCERTAIN", error=exc.as_dict()))
+        except Exception as exc:
+            return _journal_response(journal.finish(operation_id, "RESUMABLE", error=classify_error(exc).as_dict()))
+        return _journal_response(journal.finish(operation_id, "COMPLETED", result={"posts": published, "resumed": True}))
+    finally:
+        journal.close()
+
+
+def get_my_recent_posts(limit: int = 10) -> dict[str, Any]:
+    """Return locally confirmed publication URLs; never queries X in demo mode."""
+    if not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ValueError("limit must be between 1 and 100")
+    journal = OperationJournal()
+    try:
+        rows = journal.connection.execute(
+            "SELECT id,operation_type,status,result_json,updated_at FROM operations "
+            "WHERE status='COMPLETED' ORDER BY updated_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+        posts = []
+        for row in rows:
+            result = json.loads(row["result_json"] or "{}")
+            if result.get("url"):
+                posts.append({"operation_id": row["id"], "type": row["operation_type"], "url": result["url"], "updated_at": row["updated_at"]})
+            for item in result.get("posts", []):
+                if item.get("url"):
+                    posts.append({"operation_id": row["id"], "type": row["operation_type"], "url": item["url"], "updated_at": row["updated_at"]})
+        return {"posts": posts[:limit], "source": "local_journal"}
+    finally:
+        journal.close()
 
 
 def status() -> dict[str, Any]:
+    if os.environ.get("X_AGENT_DEMO") == "1":
+        return {"authenticated": False, "demo": True, "message": "Demo mode does not contact X."}
     with x_page() as page:
         page.goto(HOME_URL, wait_until="domcontentloaded", timeout=60_000)
         page.wait_for_timeout(2_000)
