@@ -8,26 +8,50 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from .articles import create_article, publish_article_draft
 from .posts import create_post, create_thread, list_communities, reply_to_post, status
 
 TOKEN = os.environ.get("X_AGENT_MCP_TOKEN")
+HOST = os.environ.get("X_AGENT_MCP_HOST", "127.0.0.1")
+
+
+def _configured_port() -> int:
+    raw = os.environ.get("X_AGENT_MCP_PORT", "8765")
+    try:
+        port = int(raw)
+    except ValueError as exc:
+        raise RuntimeError("X_AGENT_MCP_PORT must be an integer") from exc
+    if not 1 <= port <= 65_535:
+        raise RuntimeError("X_AGENT_MCP_PORT must be between 1 and 65535")
+    return port
+
+
+PORT = _configured_port()
+
+SECURITY_HEADERS = {
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
+}
 
 
 class BearerTokenMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.url.path == "/healthz":
-            return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+            return JSONResponse({"ok": True}, headers=SECURITY_HEADERS)
         expected = f"Bearer {TOKEN}"
         supplied = request.headers.get("authorization", "")
         if not TOKEN or not secrets.compare_digest(supplied, expected):
             return JSONResponse(
                 {"error": "unauthorized"},
                 status_code=401,
-                headers={"WWW-Authenticate": "Bearer"},
+                headers={**SECURITY_HEADERS, "WWW-Authenticate": "Bearer"},
             )
         response = await call_next(request)
-        response.headers["Cache-Control"] = "no-store"
-        response.headers["X-Content-Type-Options"] = "nosniff"
+        for name, value in SECURITY_HEADERS.items():
+            response.headers[name] = value
         return response
 
 
@@ -37,8 +61,8 @@ mcp = FastMCP(
         "Private X publishing tools. Draft in chat first. Publishing tools have "
         "an external side effect and may only be called after explicit user approval."
     ),
-    host="127.0.0.1",
-    port=8765,
+    host=HOST,
+    port=PORT,
     streamable_http_path="/mcp",
     stateless_http=True,
 )
@@ -78,12 +102,36 @@ def reply_x_post(post_url: str, text: str) -> dict:
     return reply_to_post(post_url, text)
 
 
+@mcp.tool()
+def create_x_article(
+    title: str,
+    body_markdown: str,
+    cover_image_path: str,
+    publish: bool = False,
+) -> dict:
+    """Create an X Article in the dedicated Articles editor. Markdown supports headings, subheadings, lists, quotes and paragraphs. A cover image is required. publish=False saves and verifies a draft; publish=True publishes only after the Everyone audience is explicitly confirmed. Never publishes to Communities or Subscribers Only."""
+    return create_article(
+        title,
+        body_markdown,
+        cover_image_path,
+        publish=publish,
+    )
+
+
+@mcp.tool()
+def publish_x_article_draft(draft_url: str, title: str, body_markdown: str) -> dict:
+    """Re-verify then publish an existing X Article draft to Everyone. This is external publication and requires explicit user confirmation. It never publishes to Communities or Subscribers Only."""
+    return publish_article_draft(draft_url, title, body_markdown)
+
+
 def main() -> None:
     if not TOKEN:
         raise SystemExit("X_AGENT_MCP_TOKEN is required")
+    if len(TOKEN) < 32:
+        raise SystemExit("X_AGENT_MCP_TOKEN must contain at least 32 characters")
     app = mcp.streamable_http_app()
     app.add_middleware(BearerTokenMiddleware)
-    uvicorn.run(app, host="127.0.0.1", port=8765, log_level="info")
+    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
 
 
 if __name__ == "__main__":

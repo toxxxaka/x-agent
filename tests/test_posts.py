@@ -93,6 +93,10 @@ class PostHelpersTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             posts._normalise_community_name("   ")
 
+    def test_status_url_rejects_a_non_x_host(self):
+        with self.assertRaises(ValueError):
+            posts._canonical_status_url("https://example.com/account/status/123")
+
 
 if __name__ == "__main__":
     unittest.main()

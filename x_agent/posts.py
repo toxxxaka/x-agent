@@ -5,11 +5,12 @@ import re
 import shutil
 import tempfile
 import time
-from pathlib import Path
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
-from playwright.sync_api import Locator, Page, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import Locator, Page
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from .browser import ensure_authenticated, x_page
 from .debug import logger
@@ -236,16 +237,35 @@ def _composer_with_audience(page: Page, editor: Locator) -> Locator:
         _wait_for_audience_button(page, editor)
         return editor
     except RuntimeError:
-        logger.info("audience composer_fallback=direct_url")
-    page.goto(COMPOSE_URL, wait_until="domcontentloaded", timeout=60_000)
+        logger.info("audience composer_fallback=post_modal")
+    # In the current X UI, navigating to /compose/post or using the inline
+    # composer omits the Community picker. Clicking the real sidebar Post
+    # control opens the modal that exposes the verified audience selector.
+    page.goto(HOME_URL, wait_until="domcontentloaded", timeout=60_000)
     page.wait_for_timeout(1_500)
     ensure_authenticated(page)
     dismiss_cookie_consent(page)
-    direct_editor = _editor(page)
-    if direct_editor is None:
-        raise RuntimeError("X Community composer editor was not found")
-    _wait_for_audience_button(page, direct_editor)
-    return direct_editor
+    post_control = page.get_by_label("Post")
+    modal_editor: Locator | None = None
+    for index in range(post_control.count()):
+        control = post_control.nth(index)
+        if not control.is_visible():
+            continue
+        control.click(timeout=15_000)
+        page.wait_for_timeout(1_000)
+        dialogs = page.locator('[role="dialog"]')
+        for dialog_index in range(dialogs.count()):
+            dialog = dialogs.nth(dialog_index)
+            if dialog.is_visible():
+                modal_editor = _editor(page, dialog)
+                if modal_editor is not None:
+                    break
+        if modal_editor is not None:
+            break
+    if modal_editor is None:
+        raise RuntimeError("X Community post modal composer was not found")
+    _wait_for_audience_button(page, modal_editor)
+    return modal_editor
 
 
 def _audience_button(page: Page, editor: Locator) -> Locator:
@@ -291,11 +311,22 @@ def select_community(page: Page, editor: Locator, community: str) -> str:
     """Select and verify a Community before text is entered. Never falls back."""
     requested = _normalise_community_name(community)
     button = _open_community_picker(page, editor)
-    matches = [
-        (item, name)
-        for item, name in _community_menu_items(page)
-        if _normalise_community_name(name) == requested
-    ]
+    matches: list[tuple[Locator, str]] = []
+    # X virtualizes the Community list. The requested Community may not be
+    # rendered until the picker is scrolled, even though it is available.
+    for page_index in range(12):
+        items = _community_menu_items(page)
+        matches = [
+            (item, name)
+            for item, name in items
+            if _normalise_community_name(name) == requested
+        ]
+        if len(matches) == 1 or page_index == 11:
+            break
+        if items:
+            items[-1][0].hover(timeout=5_000)
+        page.mouse.wheel(0, 640)
+        page.wait_for_timeout(350)
     logger.info(
         "audience selection requested=true available_count=%d exact_matches=%d",
         len(_community_menu_items(page)),

@@ -9,9 +9,14 @@ COOKIES_FILE = Path(os.environ.get("X_AGENT_COOKIES_FILE", "/opt/x-agent/x_cooki
 def load_cookies() -> list[dict]:
     """Load X browser cookies without exposing their values in logs or errors."""
     try:
-        mode = stat.S_IMODE(COOKIES_FILE.stat().st_mode)
+        file_stat = COOKIES_FILE.lstat()
     except FileNotFoundError as exc:
         raise RuntimeError("X cookie file is missing; refresh the browser session first") from exc
+    if stat.S_ISLNK(file_stat.st_mode):
+        raise RuntimeError("X cookie file must not be a symbolic link")
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise RuntimeError("X cookie file must be a regular file")
+    mode = stat.S_IMODE(file_stat.st_mode)
     if mode & 0o077:
         raise RuntimeError("X cookie file permissions must be 0600 or stricter")
     try:
