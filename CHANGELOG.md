@@ -19,6 +19,7 @@
 
 - Cookie loading rejects symbolic links and non-regular files in addition to permissive modes.
 - HTTP MCP refuses a missing or shorter-than-32-character bearer token at startup.
+- Upgraded the MCP SDK from 1.26.0 to 1.30.0 to address four published HTTP transport and task-handling advisories.
 
 ## 2026-09-29 - Snap Chromium media upload staging
 

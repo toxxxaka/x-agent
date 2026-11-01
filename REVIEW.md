@@ -16,6 +16,7 @@ No live X action was used during this review. Static checks found no committed c
 | High | Article preview logged an undefined variable after a successful preview check. | Replaced it with the supplied block count and covered Article helpers with unit tests. |
 | Medium | Cookie loading followed symlinks and accepted any file type with restrictive permissions. | Requires a regular, non-symlinked file and mode `0600` or stricter. |
 | Medium | HTTP MCP security headers were incomplete and endpoint address was hard-coded. | Applies consistent response headers and validates configurable host/port/token startup settings. |
+| High | MCP SDK 1.26.0 matched four open Dependabot advisories. | Pinned the dependency to MCP 1.30.0, the first version fixing the full set. |
 
 ## Implemented release improvements
 
